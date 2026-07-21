@@ -105,23 +105,23 @@ jobs:
         fi
 
         echo "### Добавлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(add|new|feat|adding)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(add(ing|ed| support)?|new)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
         echo "" >> ../CHANGELOG.md
 
         echo "### Исправлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(fix|bugfix)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(fix(ing|ed)?|bugfix|correct)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
         echo "" >> ../CHANGELOG.md
 
         echo "### Обновлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(update|upd|bump|revert)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(updat(ing|ed)|bump|revert)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
         echo "" >> ../CHANGELOG.md
 
         echo "### Удалено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(remove|rm|drop|delete)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
         echo "" >> ../CHANGELOG.md
 
         echo "### Прочее" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -viE '^[0-9a-f]+\s+(add|new|feat|adding|fix|bugfix|update|upd|bump|revert|remove|rm|drop|delete)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -viE '(add(ing|ed| support)?|new|fix(ing|ed)?|bugfix|correct|updat(ing|ed)|bump|revert|delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
         echo "" >> ../CHANGELOG.md
 
         echo "PREV_COMMIT=$PREV_COMMIT" >> $GITHUB_ENV
