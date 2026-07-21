@@ -37,3 +37,126 @@ jobs:
     uses: ./.github/workflows/build-one.yml
     with:
       model: mi-r3gv2
+
+  finalize:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: [rm-ac2100, mi-3, mi-r3gv2]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: beta
+
+    - name: Get variables
+      run: |
+        . <(cat variables)
+        for v in "${!PADAVAN_@}"; do
+          echo "$v=${!v}" >> $GITHUB_ENV
+        done
+
+    - name: Generate changelog from upstream
+      run: |
+        git clone --depth 200 -b "$PADAVAN_BRANCH" "$PADAVAN_REPO" upstream-log
+        cd upstream-log
+        CUR_COMMIT=$(git rev-parse HEAD)
+        CUR_DATE=$(git log -1 --format='%ad' --date=short HEAD)
+        PREV_COMMIT=$(cat ../.upstream/last-built 2>/dev/null || echo "")
+        echo "CUR_COMMIT=$CUR_COMMIT" >> $GITHUB_ENV
+
+        {
+          echo "# Changelog — $(date '+%Y-%m-%d')"
+          echo ""
+          echo "**Upstream:** nilabsent/padavan-ng"
+          echo "**Коммит:** \`${CUR_COMMIT:0:10}\` (${CUR_DATE})"
+          if [[ -n "$PREV_COMMIT" ]]; then
+            PREV_DATE=$(git log -1 --format='%ad' --date=short "$PREV_COMMIT" 2>/dev/null || echo "-")
+            echo "**Предыдущий коммит:** \`${PREV_COMMIT:0:10}\` (${PREV_DATE})"
+          else
+            echo "**Предыдущий коммит:** отсутствует (первая сборка)"
+          fi
+          echo ""
+        } > ../CHANGELOG.md
+
+        if [[ -z "$PREV_COMMIT" ]]; then
+          echo "### Первая сборка" >> ../CHANGELOG.md
+          echo "Предыдущая версия отсутствует. Это первая сборка в данном форке." >> ../CHANGELOG.md
+          echo "empty_first=true" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        if ! git cat-file -e "$PREV_COMMIT" 2>/dev/null; then
+          echo "" >> ../CHANGELOG.md
+          echo "### Предыдущий коммит недоступен" >> ../CHANGELOG.md
+          echo "Коммит \`${PREV_COMMIT:0:10}\` не найден в upstream-репозитории." >> ../CHANGELOG.md
+          echo "empty_unknown=true" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        COMMITS=$(git log --oneline "$PREV_COMMIT..HEAD" 2>/dev/null)
+        if [[ -z "$COMMITS" ]]; then
+          echo "" >> ../CHANGELOG.md
+          echo "Изменений нет: текущий коммит совпадает с предыдущим." >> ../CHANGELOG.md
+          echo "empty_up_to_date=true" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        echo "### Добавлено" >> ../CHANGELOG.md
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(add|new|feat|adding)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        echo "" >> ../CHANGELOG.md
+
+        echo "### Исправлено" >> ../CHANGELOG.md
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(fix|bugfix)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        echo "" >> ../CHANGELOG.md
+
+        echo "### Обновлено" >> ../CHANGELOG.md
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(update|upd|bump|revert)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        echo "" >> ../CHANGELOG.md
+
+        echo "### Удалено" >> ../CHANGELOG.md
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '^[0-9a-f]+\s+(remove|rm|drop|delete)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        echo "" >> ../CHANGELOG.md
+
+        echo "### Прочее" >> ../CHANGELOG.md
+        git log --oneline "$PREV_COMMIT..HEAD" | grep -viE '^[0-9a-f]+\s+(add|new|feat|adding|fix|bugfix|update|upd|bump|revert|remove|rm|drop|delete)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
+        echo "" >> ../CHANGELOG.md
+
+        echo "PREV_COMMIT=$PREV_COMMIT" >> $GITHUB_ENV
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: firmware
+
+    - name: Collect firmware files
+      run: |
+        mkdir -p release
+        find firmware -type f \( -name '*.trx' -o -name '*.config' -o -name 'CHANGELOG-*.md' \) -exec cp {} release/ \;
+        cp CHANGELOG.md release/
+        ls -la release/
+
+    - name: Update .upstream/last-built via API
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        CONTENT=$(echo -n "$CUR_COMMIT" | base64 -w0)
+        SHA=$(gh api "repos/${{ github.repository }}/contents/.upstream/last-built?ref=beta" --jq '.sha')
+        gh api "repos/${{ github.repository }}/contents/.upstream/last-built" \
+          -X PUT \
+          -f message=".upstream/last-built: update to ${CUR_COMMIT:0:10}" \
+          -f branch="beta" \
+          -f content="$CONTENT" \
+          -f sha="$SHA"
+        echo "Updated .upstream/last-built to ${CUR_COMMIT:0:10}"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Padavan ${{ github.ref_name }}
+        body_path: CHANGELOG.md
+        files: release/*
+        make_latest: false
