@@ -42,7 +42,7 @@ jobs:
     - name: Check firmware partition limit (pre-build info)
       run: |
         VENDOR="$CONFIG_VENDOR"
-        PRODUCT="$CONFIG_FIRMWARE_PRODUCT_ID"
+        PRODUCT="$(echo "$CONFIG_FIRMWARE_PRODUCT_ID" | tr -d '"')"
         echo "Model: ${{ inputs.model }}"
         echo "Vendor: $VENDOR"
         echo "Product: $PRODUCT"
