@@ -109,13 +109,20 @@ jobs:
     - name: Prepare artifacts
       run: |
         mkdir -p "${{ inputs.model }}"
-        cp "padavan-ng/trunk/images/$FW_FILE_NAME" "${{ inputs.model }}/firmware-${{ inputs.model }}.trx"
+        VENDOR="$CONFIG_VENDOR"
+        PRODUCT="$(echo "$CONFIG_FIRMWARE_PRODUCT_ID" | tr -d '"')"
+        BUILD_DATE=$(date '+%Y.%m.%d')
+        BASE="${FW_FILE_NAME%.*}"
+        EXT="${FW_FILE_NAME##*.}"
+        FW_OUT_NAME="padavan-ng_${VENDOR}_${BASE}_${BUILD_DATE}.${EXT}"
+        cp "padavan-ng/trunk/images/$FW_FILE_NAME" "${{ inputs.model }}/$FW_OUT_NAME"
         cp "configs/${{ inputs.model }}.config" "${{ inputs.model }}/${{ inputs.model }}.config"
         echo "BUILD_TIMESTAMP=$(date '+%Y.%m.%d_%H.%M.%S')" >> $GITHUB_ENV
+        echo "FW_OUT_NAME=$FW_OUT_NAME" >> $GITHUB_ENV
 
     - name: Check firmware size (post-build, blocking)
       run: |
-        FW_FILE="${{ inputs.model }}/firmware-${{ inputs.model }}.trx"
+        FW_FILE="${{ inputs.model }}/$FW_OUT_NAME"
         fw_size="$(stat -c %s "$FW_FILE")"
         max_fw_size="${{ env.MAX_FW_SIZE }}"
         if [[ -z "$max_fw_size" || "$max_fw_size" == "0" ]]; then
@@ -164,7 +171,7 @@ jobs:
         name: Padavan ${{ github.ref_name }}
         body_path: ${{ inputs.model }}/CHANGELOG.md
         files: |
-          ${{ inputs.model }}/firmware-${{ inputs.model }}.trx
+          ${{ inputs.model }}/*.trx
           ${{ inputs.model }}/${{ inputs.model }}.config
           ${{ inputs.model }}/CHANGELOG.md
         make_latest: false
