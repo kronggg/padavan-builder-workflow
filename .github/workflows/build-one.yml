@@ -141,7 +141,7 @@ jobs:
 
     - name: Generate changelog
       run: |
-        CHANGELOG="${{ inputs.model }}/CHANGELOG.md"
+        CHANGELOG="${{ inputs.model }}/CHANGELOG-${{ inputs.model }}.md"
         echo "# Changelog for ${{ inputs.model }}" > "$CHANGELOG"
         echo "" >> "$CHANGELOG"
         echo "Build date: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> "$CHANGELOG"
@@ -163,15 +163,3 @@ jobs:
         retention-days: 7
         path: ${{ inputs.model }}/
 
-    - name: Create Release
-      if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.ref_name }}
-        name: Padavan ${{ github.ref_name }}
-        body_path: ${{ inputs.model }}/CHANGELOG.md
-        files: |
-          ${{ inputs.model }}/*.trx
-          ${{ inputs.model }}/${{ inputs.model }}.config
-          ${{ inputs.model }}/CHANGELOG.md
-        make_latest: false
