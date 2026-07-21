@@ -17,7 +17,7 @@ on:
     tags:
       - 'v*'
   schedule:
-    - cron: '30 6 * * 1'  # 09:30 MSK по понедельникам
+    - cron: '30 6 * * 1'
 
 jobs:
   build:
@@ -33,18 +33,11 @@ jobs:
       run:
         shell: bash
 
+    # Only run matrix entry matching workflow_dispatch input; run all on schedule/push
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.model == 'all' || github.event.inputs.model == matrix.model }}
+
     steps:
     - uses: actions/checkout@v4
-
-    - name: Check if model should be skipped
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          INPUT_MODEL="${{ github.event.inputs.model }}"
-          if [[ "$INPUT_MODEL" != "all" && "$INPUT_MODEL" != "${{ matrix.model }}" ]]; then
-            echo "Skipping ${{ matrix.model }} (requested: $INPUT_MODEL)"
-            exit 0
-          fi
-        fi
 
     - name: Get variables and config
       run: |
@@ -116,6 +109,8 @@ jobs:
 
     - name: Build firmware
       run: |
+        # Normalize line endings (CRLF -> LF) in case config was uploaded with Windows line endings
+        sed -i 's/\r$//' "configs/${{ matrix.model }}.config"
         cp "configs/${{ matrix.model }}.config" padavan-ng/trunk/.config
         cd padavan-ng/trunk
         ./clear_tree.sh
