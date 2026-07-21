@@ -1,0 +1,126 @@
+name: Watch upstream changes
+
+on:
+  schedule:
+    - cron: '5 5 * * *'  # 08:05 MSK ежедневно
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults: { run: { shell: bash } }
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: beta
+        fetch-depth: 0
+
+    - name: Check upstream for new commits
+      run: |
+        . variables
+
+        CHECKED_SHA=$(cat .upstream/checked 2>/dev/null || echo "")
+
+        if [[ -z "$CHECKED_SHA" ]]; then
+          echo "No checked SHA found, initializing"
+          echo "$PADAVAN_COMMIT" > .upstream/checked
+          git add .upstream/checked
+          git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: init checked SHA"
+          git push
+          exit 0
+        fi
+
+        git remote add upstream "$PADAVAN_REPO" 2>/dev/null || true
+        git fetch upstream "$PADAVAN_BRANCH" --depth=50
+
+        NEW_COMMITS=$(git log --oneline "$CHECKED_SHA".."upstream/$PADAVAN_BRANCH" --format="%H" 2>/dev/null | tac)
+        COMMIT_COUNT=$(echo "$NEW_COMMITS" | wc -l)
+
+        if [[ "$COMMIT_COUNT" -eq 0 ]]; then
+          echo "No new commits since last check"
+          exit 0
+        fi
+
+        echo "Found $COMMIT_COUNT new commit(s)"
+
+        MEANINGFUL=false
+        URGENCY=false
+        PENDING_SHA=""
+
+        for SHA in $NEW_COMMITS; do
+          CHANGED_FILES=$(git diff --name-only "$SHA"^.."$SHA" 2>/dev/null || echo "")
+
+          COMMIT_MSG=$(git log --format="%s %b" -1 "$SHA" | tr '[:upper:]' '[:lower:]')
+          if echo "$COMMIT_MSG" | grep -qE '(cve|cvss|security|fix critical)'; then
+            URGENCY=true
+            echo "URGENCY: $SHA - $(echo "$COMMIT_MSG" | head -c 80)"
+          fi
+
+          for FILE in $CHANGED_FILES; do
+            case "$FILE" in
+              trunk/libs/*|trunk/user/*|trunk/linux-3.4.x/*|trunk/configs/boards/*)
+                MEANINGFUL=true
+                PENDING_SHA="$SHA"
+                break
+                ;;
+              trunk/build_firmware.sh|trunk/clear_tree.sh|toolchain/*)
+                MEANINGFUL=true
+                PENDING_SHA="$SHA"
+                break
+                ;;
+            esac
+          done
+
+          if [[ "$MEANINGFUL" == true && -n "$PENDING_SHA" ]]; then
+            echo "$PENDING_SHA" >> .upstream/pending
+            echo "Added to pending: $PENDING_SHA"
+            MEANINGFUL=false
+            PENDING_SHA=""
+          fi
+        done
+
+        LATEST_SHA=$(git rev-parse "upstream/$PADAVAN_BRANCH")
+        echo "$LATEST_SHA" > .upstream/checked
+
+        git add .upstream/checked .upstream/pending
+        git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: check $(date +%Y-%m-%d)
+
+        Commits checked: ${CHECKED_SHA:0:8}..${LATEST_SHA:0:8} ($COMMIT_COUNT new)
+        Pending: $(wc -l < .upstream/pending) SHA(s)"
+        git push
+
+        echo "URGENCY=$URGENCY" >> $GITHUB_ENV
+
+    - name: Trigger weekly or urgent build
+      run: |
+        . variables
+
+        PENDING_COUNT=$(wc -l < .upstream/pending 2>/dev/null || echo 0)
+
+        if [[ "$PENDING_COUNT" -eq 0 ]]; then
+          echo "No pending commits, no build needed"
+          exit 0
+        fi
+
+        DAY_OF_WEEK=$(date +%u)
+        TAG_DATE=$(date +%Y.%m.%d)
+        TAG="v$TAG_DATE"
+
+        URGENCY="${{ env.URGENCY }}"
+
+        if [[ "$URGENCY" == "true" ]]; then
+          TAG="${TAG}-urgency"
+          echo "URGENCY build triggered: $TAG"
+        elif [[ "$DAY_OF_WEEK" -ne 1 ]]; then
+          echo "Not Monday (day $DAY_OF_WEEK), skipping weekly build. $PENDING_COUNT SHA(s) pending."
+          exit 0
+        fi
+
+        git tag "$TAG"
+        git push origin "$TAG"
+        echo "Tag $TAG pushed, build.yml will trigger"
+
+        > .upstream/pending
+        git add .upstream/pending
+        git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: clear pending after tag $TAG"
+        git push

@@ -2,26 +2,95 @@ name: Build firmware
 
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - rm-ac2100
+          - mi-3
+          - mi-r3gv2
   push:
     tags:
-      - '*'
+      - 'v*'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container: registry.gitlab.com/hadzhioglu/padavan-ng
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [rm-ac2100, mi-3, mi-r3gv2]
+
+    runs-on: ubuntu-24.04
     defaults: { run: { shell: bash } }
+
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && 
+       (github.event.inputs.model == 'all' || github.event.inputs.model == matrix.model))
+
     steps:
     - uses: actions/checkout@v4
 
-    - name: Get variables
+    - name: Install dependencies
       run: |
-        sed -i 's|\r$||g' variables build.config
-        . <(cat variables build.config)
-        PADAVAN_THEMES="${PADAVAN_THEMES[*]}"
-        for v in "${!PADAVAN_@}" "${!CONFIG_@}"; do
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends \
+          autoconf automake bison bzip2 curl file flex g++ gawk gcc \
+          gettext git groff-base libncurses-dev libtool libssl-dev \
+          make patch pkg-config shtool subversion tar texinfo tree \
+          unzip wget zlib1g-dev zstd
+        apt-get clean
+
+    - name: Get variables and config
+      run: |
+        . <(cat variables)
+
+        CONFIG_FILE="configs/${{ matrix.model }}.config"
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+          echo "Config file not found: $CONFIG_FILE"
+          exit 1
+        fi
+
+        while IFS='=' read -r key value; do
+          [[ "$key" =~ ^CONFIG_ ]] && echo "$key=$value" >> $GITHUB_ENV
+        done < "$CONFIG_FILE"
+
+        for v in "${!PADAVAN_@}"; do
           echo "$v=${!v}" >> $GITHUB_ENV
         done
+
+        echo "MODEL=${{ matrix.model }}" >> $GITHUB_ENV
+
+    - name: Check firmware partition limit (pre-build info)
+      run: |
+        VENDOR="$CONFIG_VENDOR"
+        PRODUCT="$CONFIG_FIRMWARE_PRODUCT_ID"
+        echo "Model: ${{ matrix.model }}"
+        echo "Vendor: $VENDOR"
+        echo "Product: $PRODUCT"
+
+        git clone --depth 1 -b "$PADAVAN_BRANCH" "$PADAVAN_REPO" upstream-check
+        PART_FILE="upstream-check/trunk/configs/boards/${VENDOR}/${PRODUCT}/partitions.config"
+        if [[ -f "$PART_FILE" ]]; then
+          echo "=== partitions.config ==="
+          cat "$PART_FILE"
+          MAX_SIZE=$(grep -oP 'mtd_firmware_size\s*=\s*\K\d+' "$PART_FILE" || \
+                     grep -oP 'mtd_firmware_start\s*=\s*\K\d+' "$PART_FILE" || echo "unknown")
+          if [[ "$MAX_SIZE" != "unknown" ]]; then
+            MAX_SIZE_MB=$(echo "scale=1; $MAX_SIZE / 1048576" | bc)
+            echo "Firmware partition limit: $MAX_SIZE bytes (~${MAX_SIZE_MB} MB)"
+            echo "MAX_FW_SIZE=$MAX_SIZE" >> $GITHUB_ENV
+          else
+            echo "Warning: could not determine firmware partition size"
+          fi
+        else
+          echo "Warning: partitions.config not found at $PART_FILE"
+        fi
+        rm -rf upstream-check
 
     - name: Download sources and toolchain
       run: |
@@ -35,7 +104,6 @@ jobs:
         if [[ -n $PADAVAN_THEMES ]]; then
           git clone --depth 1 -b "$PADAVAN_THEMES_BRANCH" "$PADAVAN_THEMES_REPO" themes
           cp -r themes/common-theme themes/jquery.js padavan-ng/trunk/user/www/n56u_ribbon_fixed
-
           for theme in $PADAVAN_THEMES; do
             echo "Installing $theme theme"
             cp -r "themes/$theme-theme" padavan-ng/trunk/user/www/n56u_ribbon_fixed
@@ -47,7 +115,7 @@ jobs:
 
     - name: Build firmware
       run: |
-        cp build.config padavan-ng/trunk/.config
+        cp "configs/${{ matrix.model }}.config" padavan-ng/trunk/.config
         cd padavan-ng/trunk
         ./clear_tree.sh
         ./build_firmware.sh
@@ -62,27 +130,69 @@ jobs:
 
     - name: Prepare artifacts
       run: |
-        cp "padavan-ng/trunk/images/$FW_FILE_NAME" .
+        mkdir -p "${{ matrix.model }}"
+        cp "padavan-ng/trunk/images/$FW_FILE_NAME" "${{ matrix.model }}/firmware-${{ matrix.model }}.trx"
+        cp "configs/${{ matrix.model }}.config" "${{ matrix.model }}/${{ matrix.model }}.config"
         echo "BUILD_TIMESTAMP=$(date '+%Y.%m.%d_%H.%M.%S')" >> $GITHUB_ENV
+
+    - name: Check firmware size (post-build, blocking)
+      run: |
+        FW_FILE="${{ matrix.model }}/firmware-${{ matrix.model }}.trx"
+        fw_size="$(stat -c %s "$FW_FILE")"
+        max_fw_size="${{ env.MAX_FW_SIZE }}"
+
+        if [[ -z "$max_fw_size" || "$max_fw_size" == "0" ]]; then
+          echo "Warning: MAX_FW_SIZE not set, skipping size check"
+          exit 0
+        fi
+
+        fw_size_fmtd="$(numfmt --grouping "$fw_size") bytes"
+        max_fw_size_fmtd="$(numfmt --grouping "$max_fw_size") bytes"
+
+        echo "Firmware size: $fw_size_fmtd"
+        echo "Partition limit: $max_fw_size_fmtd"
+
+        if ((fw_size > max_fw_size)); then
+          echo "FAIL: Firmware size ($fw_size_fmtd) exceeds max size ($max_fw_size_fmtd) for ${{ matrix.model }}"
+          exit 1
+        fi
+        echo "OK: Firmware fits within partition limit"
+
+    - name: Generate changelog
+      run: |
+        CHANGELOG="${{ matrix.model }}/CHANGELOG.md"
+        echo "# Changelog for ${{ matrix.model }}" > "$CHANGELOG"
+        echo "" >> "$CHANGELOG"
+        echo "Build date: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> "$CHANGELOG"
+        echo "Upstream: nilabsent/padavan-ng" >> "$CHANGELOG"
+        echo "" >> "$CHANGELOG"
+
+        if [[ -n "${{ github.ref_name }}" && "${{ github.ref_name }}" =~ ^v ]]; then
+          echo "Tag: ${{ github.ref_name }}" >> "$CHANGELOG"
+          PREV_TAG=$(git tag --sort=-version:refname | head -1)
+          if [[ -n "$PREV_TAG" && "$PREV_TAG" != "${{ github.ref_name }}" ]]; then
+            echo "" >> "$CHANGELOG"
+            echo "Changes since $PREV_TAG:" >> "$CHANGELOG"
+            git log --oneline "$PREV_TAG".."${{ github.ref_name }}" >> "$CHANGELOG" 2>/dev/null || true
+          fi
+        fi
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: padavan-ng_${{ env.CONFIG_VENDOR }}_${{ env.CONFIG_FIRMWARE_PRODUCT_ID }}_${{ env.BUILD_TIMESTAMP }}
+        name: ${{ matrix.model }}-${{ env.BUILD_TIMESTAMP }}
         retention-days: 7
-        path: |
-          ${{ env.FW_FILE_NAME }}
-          build.config
+        path: ${{ matrix.model }}/
 
-    - name: Check firmware size
-      run: |
-        partitions=padavan-ng/trunk/configs/boards/$CONFIG_VENDOR/$CONFIG_FIRMWARE_PRODUCT_ID/partitions.config
-        max_fw_size="$(awk '/Firmware/ { getline; getline; sub(",", ""); print strtonum($2); }' "$partitions")"
-        fw_size="$(stat -c %s "$FW_FILE_NAME")"
-
-        if ((fw_size > max_fw_size)); then
-          fw_size_fmtd="$(numfmt --grouping "$fw_size") bytes"
-          max_fw_size_fmtd="$(numfmt --grouping "$max_fw_size") bytes"
-          echo "Firmware size ($fw_size_fmtd) exceeds max size ($max_fw_size_fmtd) for your target device"
-          exit 1
-        fi
+    - name: Create Release
+      if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Padavan ${{ github.ref_name }}
+        body_path: ${{ matrix.model }}/CHANGELOG.md
+        files: |
+          ${{ matrix.model }}/firmware-${{ matrix.model }}.trx
+          ${{ matrix.model }}/${{ matrix.model }}.config
+          ${{ matrix.model }}/CHANGELOG.md
+        make_latest: false
