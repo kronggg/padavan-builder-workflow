@@ -1,20 +1,22 @@
 # padavan-builder-workflow
 
-Автоматическая сборка прошивок [Padavan (nilabsent/padavan-ng)](https://github.com/nilabsent/padavan-ng) для нескольких моделей роутеров с мониторингом изменений upstream.
+Автоматическая сборка прошивок [Padavan (nilabsent/padavan-ng)](https://github.com/nilabsent/padavan-ng) для нескольких моделей роутеров.
 
-Форк от [shvchk/padavan-builder-workflow](https://github.com/shvchk/padavan-builder-workflow). Оригинальный функционал расширен: добавлена матричная сборка, мониторинг upstream, автоматические релизы и фильтрация изменений.
+Форк [shvchk/padavan-builder-workflow](https://github.com/shvchk/padavan-builder-workflow) — функционал расширен: несколько моделей, мониторинг upstream, автоматический changelog с категоризацией коммитов.
+
+> Форк создан для автоматизации собственных сборок. Changelog и прошивки предоставляются as-is.
 
 ## Возможности
 
-- **Матричная сборка** — параллельная сборка всех моделей в одном запуске
-- **Мониторинг upstream** — ежедневная проверка новых коммитов в nilabsent/padavan-ng с фильтрацией meaningful/trivial
-- **Еженедельный релиз** — автоматическая сборка в понедельник при наличии meaningful изменений за неделю
-- **Urgency-сборка** — экстренный запуск при CVE/security-фиксах в upstream
-- **Ручной запуск** — workflow_dispatch с выбором конкретной модели или всех сразу
-- **GitHub Releases** — архив на каждую модель (прошивка + .config + changelog)
-- **Умный фильтр** — сборка только при изменениях, влияющих на функционал (libs/user/boards/toolchain)
-- **Автоматическая проверка размера** — каждая модель проверяется на лимит firmware partition
-- **Валидация partitions.config** — при добавлении модели конфиг сверяется с upstream
+- **Независимые сборки** — отдельные job (rm-ac2100, mi-3, mi-r3gv2) под каждую модель, со своим `.config` и проверкой partition limit. Возможность запускать сборку выбранной модели или всех разом.
+- **Единый Release** — после всех успешных сборок: один GitHub Release со всеми прошивками, конфигами и общим changelog
+- **Автоматический changelog** — категоризация upstream-коммитов (Добавлено/Исправлено/Обновлено/Удалено/Прочее)
+- **Мониторинг upstream** — ежедневная проверка новых коммитов с фильтрацией meaningful/trivial
+- **Еженедельный релиз** — авто-тег в понедельник при наличии meaningful изменений
+- **Urgency-сборка** — экстренный запуск при CVE/security-фиксах
+- **Ручной запуск** — workflow_dispatch с выбором модели или all
+- **Валидация размера** — проверка лимита firmware partition из upstream
+- **GitHub Watch → Releases** — уведомления о новых сборках через нативный механизм GitHub
 
 ## Модели
 
@@ -26,59 +28,62 @@
 
 ## Триггеры сборки
 
-| Событие | Действие |
-|---|---|
-| `workflow_dispatch` | Ручной запуск (выбор модели или all) |
-| `push` на тег `v*` | Релизная сборка + GitHub Release |
-| watch-upstream (ежедневно, пн) | Мониторинг изменений nilabsent; авто-тег при meaningful |
-| urgency (CVE/security) | Экстренная сборка вне недельного графика |
+| Событие | Действие | Когда |
+|---|---|---|
+| `workflow_dispatch` | Ручной запуск | В любой момент |
+| `push` на тег `v*` | Полная сборка + Release | Авто — от watch-upstream |
+| `schedule` (пн 06:30 UTC) | Еженедельная сборка | Каждый понедельник |
+
+## Как работает changelog
+
+После успешной сборки job `finalize`:
+1. Клонирует nilabsent/padavan-ng
+2. Читает предыдущий коммит из `.upstream/last-built`
+3. `git log` между предыдущим и текущим коммитом
+4. Категоризация по префиксам сообщений
+5. Обновляет `.upstream/last-built` для следующей сборки
+
+Первый changelog — от коммита `a900068de` (8 июня 2026).
 
 ## Мониторинг upstream
 
-watch-upstream ежедневно проверяет новые коммиты в nilabsent/padavan-ng.
-Сборка запускается **только при meaningful изменениях** (обновление openssl, curl, драйверов, ядра, тулчейна).
-Изменения документации, переводов и косметики — игнорируются.
+`watch-upstream.yml` — ежедневно в 08:05 MSK:
+1. Сверяет `.upstream/checked` с HEAD nilabsent
+2. **Meaningful** — изменения в libs/user/linux-3.4.x/boards/toolchain
+3. **Urgency** — при CVE/security — сборка в тот же день
+4. В понедельник: если есть pending — создаёт тег `vYYYY.MM.DD`
 
 ## Версионирование
 
-Теги: `vYYYY.MM.DD`. Одна сборка в неделю (понедельник). При urgency — отдельный тег в тот же день.
+Теги: `vYYYY.MM.DD`. При urgency: `vYYYY.MM.DD-urgency`.
 
-## Релизный механизм
-
-GitHub Release с архивами на каждую модель:
-- Прошивка (`.trx`)
-- Конфиг сборки (`.config`)
-- Changelog изменений (`CHANGELOG.md`)
-
-Уведомление — через GitHub Watch → Releases.
-
-## Структура репозитория
+## Структура
 
 ```
 .github/workflows/
-├── build.yml              — матричная сборка + релиз
-└── watch-upstream.yml     — ежедневный мониторинг upstream
+├── build.yml                  — сборка + finalize (Release, changelog)
+├── build-one.yml              — reusable: сборка одной модели
+├── watch-upstream.yml         — мониторинг nilabsent/padavan-ng
+└── close-inappropriate-pr.yml — защита от PR с build.config
 .upstream/
-├── checked                — последний проверенный SHA
-└── pending                — накопленные meaningful SHA
+├── checked                    — последний проверенный SHA
+├── pending                    — накопленные meaningful SHA
+└── last-built                 — предыдущий коммит для changelog
 configs/
 ├── rm-ac2100.config
 ├── mi-3.config
 └── mi-r3gv2.config
-variables                  — переменные сборки (репозиторий, тулчейн, темы)
 docs/
-└── FAQ.md                 — инструкция по добавлению моделей
+├── FAQ.md                     — добавление моделей
+├── README.md / ru/README.md  — оригинальные README (en/ru)
+└── misc/                      — скриншоты
+variables                      — репозиторий, тулчейн, темы
 ```
 
 ## Добавление новой модели
 
 См. [docs/FAQ.md](docs/FAQ.md).
 
-## Оригинальный репозиторий
-
-Оригинальный форк: [shvchk/padavan-builder-workflow](https://github.com/shvchk/padavan-builder-workflow).  
-README на английском и русском: [docs/README.md](docs/README.md) и [docs/ru/README.md](docs/ru/README.md).
-
 ## Темы
 
-Используются дефолтные темы Padavan. Персонализация доступна в WebUI прошивки.
+Дефолтные темы Padavan. Персонализация — через WebUI.
