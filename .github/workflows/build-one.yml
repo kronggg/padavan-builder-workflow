@@ -142,19 +142,61 @@ jobs:
     - name: Generate changelog
       run: |
         CHANGELOG="${{ inputs.model }}/CHANGELOG-${{ inputs.model }}.md"
-        echo "# Changelog for ${{ inputs.model }}" > "$CHANGELOG"
-        echo "" >> "$CHANGELOG"
-        echo "Build date: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> "$CHANGELOG"
-        echo "Upstream: nilabsent/padavan-ng" >> "$CHANGELOG"
-        echo "" >> "$CHANGELOG"
-        if [[ -n "${{ github.ref_name }}" && "${{ github.ref_name }}" =~ ^v ]]; then
-          echo "Tag: ${{ github.ref_name }}" >> "$CHANGELOG"
-          PREV_TAG=$(git tag --sort=-version:refname | head -1)
-          if [[ -n "$PREV_TAG" && "$PREV_TAG" != "${{ github.ref_name }}" ]]; then
-            echo "" >> "$CHANGELOG"
-            git log --oneline "$PREV_TAG".."${{ github.ref_name }}" >> "$CHANGELOG" 2>/dev/null || true
+        {
+          echo "# Changelog for ${{ inputs.model }}"
+          echo ""
+          echo "Build date: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Upstream: nilabsent/padavan-ng"
+          echo ""
+          if [[ -n "${{ github.ref_name }}" && "${{ github.ref_name }}" =~ ^v ]]; then
+            echo "Tag: ${{ github.ref_name }}"
           fi
+          echo ""
+        } > "$CHANGELOG"
+        
+        PREV_COMMIT=$(cat .upstream/last-built 2>/dev/null || echo "")
+        if [[ -z "$PREV_COMMIT" ]]; then
+          echo "### Первая сборка" >> "$CHANGELOG"
+          echo "Предыдущая версия отсутствует. Это первая сборка в данном форке." >> "$CHANGELOG"
+          exit 0
         fi
+        
+        CUR_COMMIT=$(git -C padavan-ng rev-parse HEAD 2>/dev/null || echo "")
+        if [[ -z "$CUR_COMMIT" ]]; then
+          echo "### Ошибка: upstream не найден" >> "$CHANGELOG"
+          exit 0
+        fi
+        
+        echo "**Коммит:** `${CUR_COMMIT:0:10}`" >> "$CHANGELOG"
+        PREV_DATE=$(git -C padavan-ng log -1 --format='%ad' --date=short "$PREV_COMMIT" 2>/dev/null || echo "-")
+        echo "**Предыдущий коммит:** `${PREV_COMMIT:0:10}` (${PREV_DATE})" >> "$CHANGELOG"
+        echo "" >> "$CHANGELOG"
+        
+        if ! git -C padavan-ng cat-file -e "$PREV_COMMIT" 2>/dev/null; then
+          echo "### Предыдущий коммит недоступен" >> "$CHANGELOG"
+          echo "Коммит `${PREV_COMMIT:0:10}` не найден в upstream-репозитории." >> "$CHANGELOG"
+          exit 0
+        fi
+        
+        echo "### Добавлено" >> "$CHANGELOG"
+        git -C padavan-ng log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(add(ing|ed| support)?|new)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> "$CHANGELOG" || true
+        echo "" >> "$CHANGELOG"
+        
+        echo "### Исправлено" >> "$CHANGELOG"
+        git -C padavan-ng log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(fix(ing|ed)?|bugfix|correct)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> "$CHANGELOG" || true
+        echo "" >> "$CHANGELOG"
+        
+        echo "### Обновлено" >> "$CHANGELOG"
+        git -C padavan-ng log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(updat(ing|ed)|bump|revert)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> "$CHANGELOG" || true
+        echo "" >> "$CHANGELOG"
+        
+        echo "### Удалено" >> "$CHANGELOG"
+        git -C padavan-ng log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> "$CHANGELOG" || true
+        echo "" >> "$CHANGELOG"
+        
+        echo "### Прочее" >> "$CHANGELOG"
+        git -C padavan-ng log --oneline "$PREV_COMMIT..HEAD" | grep -viE '(add(ing|ed| support)?|new|fix(ing|ed)?|bugfix|correct|updat(ing|ed)|bump|revert|delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> "$CHANGELOG" || true
+        echo "" >> "$CHANGELOG"
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
