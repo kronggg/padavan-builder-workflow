@@ -167,14 +167,14 @@ jobs:
           exit 0
         fi
         
-        echo "**Коммит:** `${CUR_COMMIT:0:10}`" >> "$CHANGELOG"
+        echo "**Коммит:** \`${CUR_COMMIT:0:10}\`" >> "$CHANGELOG"
         PREV_DATE=$(git -C padavan-ng log -1 --format='%ad' --date=short "$PREV_COMMIT" 2>/dev/null || echo "-")
-        echo "**Предыдущий коммит:** `${PREV_COMMIT:0:10}` (${PREV_DATE})" >> "$CHANGELOG"
+        echo "**Предыдущий коммит:** \`${PREV_COMMIT:0:10}\` (${PREV_DATE})" >> "$CHANGELOG"
         echo "" >> "$CHANGELOG"
         
         if ! git -C padavan-ng cat-file -e "$PREV_COMMIT" 2>/dev/null; then
           echo "### Предыдущий коммит недоступен" >> "$CHANGELOG"
-          echo "Коммит `${PREV_COMMIT:0:10}` не найден в upstream-репозитории." >> "$CHANGELOG"
+          echo "Коммит \`${PREV_COMMIT:0:10}\` не найден в upstream-репозитории." >> "$CHANGELOG"
           exit 0
         fi
         
