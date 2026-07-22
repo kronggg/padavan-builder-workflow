@@ -70,13 +70,13 @@ jobs:
         {
           echo "# Changelog — $(date '+%Y-%m-%d')"
           echo ""
-          echo "**Upstream:** nilabsent/padavan-ng"
-          echo "**Коммит:** \`${CUR_COMMIT:0:10}\` (${CUR_DATE})"
+          echo "Upstream: nilabsent/padavan-ng"
+          echo "Коммит: ${CUR_COMMIT:0:10} (${CUR_DATE})"
           if [[ -n "$PREV_COMMIT" ]]; then
             PREV_DATE=$(git log -1 --format='%ad' --date=short "$PREV_COMMIT" 2>/dev/null || echo "-")
-            echo "**Предыдущий коммит:** \`${PREV_COMMIT:0:10}\` (${PREV_DATE})"
+            echo "Предыдущий коммит: ${PREV_COMMIT:0:10} (${PREV_DATE})"
           else
-            echo "**Предыдущий коммит:** отсутствует (первая сборка)"
+            echo "Предыдущий коммит: отсутствует (первая сборка)"
           fi
           echo ""
         } > ../CHANGELOG.md
@@ -91,7 +91,7 @@ jobs:
         if ! git cat-file -e "$PREV_COMMIT" 2>/dev/null; then
           echo "" >> ../CHANGELOG.md
           echo "### Предыдущий коммит недоступен" >> ../CHANGELOG.md
-          echo "Коммит \`${PREV_COMMIT:0:10}\` не найден в upstream-репозитории." >> ../CHANGELOG.md
+          echo "Коммит ${PREV_COMMIT:0:10} не найден в upstream-репозитории." >> ../CHANGELOG.md
           echo "empty_unknown=true" >> $GITHUB_ENV
           exit 0
         fi
