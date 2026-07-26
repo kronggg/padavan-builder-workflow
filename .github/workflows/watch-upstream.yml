@@ -25,8 +25,12 @@ jobs:
           echo "No checked SHA found, initializing"
           echo "$PADAVAN_COMMIT" > .upstream/checked
           git add .upstream/checked
-          git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: init checked SHA"
-          git push
+          if ! git diff --cached --quiet; then
+            git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: init checked SHA"
+            git push
+          else
+            echo "No changes to commit."
+          fi
           exit 0
         fi
 
@@ -82,12 +86,20 @@ jobs:
         LATEST_SHA=$(git rev-parse "upstream/$PADAVAN_BRANCH")
         echo "$LATEST_SHA" > .upstream/checked
 
-        git add .upstream/checked .upstream/pending
-        git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: check $(date +%Y-%m-%d)
+        git add .upstream/checked
+        if [ -f .upstream/pending ]; then
+          git add .upstream/pending
+        fi
+        # Check if there are any staged changes
+        if ! git diff --cached --quiet; then
+          git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: check $(date +%Y-%m-%d)
 
         Commits checked: ${CHECKED_SHA:0:8}..${LATEST_SHA:0:8} ($COMMIT_COUNT new)
-        Pending: $(wc -l < .upstream/pending) SHA(s)"
-        git push
+        Pending: $(wc -l < .upstream/pending 2>/dev/null || echo 0) SHA(s)"
+          git push
+        else
+          echo "No changes to commit."
+        fi
 
         echo "URGENCY=$URGENCY" >> $GITHUB_ENV
 
@@ -122,5 +134,9 @@ jobs:
 
         > .upstream/pending
         git add .upstream/pending
-        git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: clear pending after tag $TAG"
-        git push
+        if ! git diff --cached --quiet; then
+          git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: clear pending after tag $TAG"
+          git push
+        else
+          echo "No changes to commit."
+        fi
