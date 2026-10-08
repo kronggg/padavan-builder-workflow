@@ -12,7 +12,7 @@
 - **Единый Release** — после всех успешных сборок: один GitHub Release со всеми прошивками, конфигами и общим changelog
 - **Автоматический changelog** — категоризация upstream-коммитов (Добавлено/Исправлено/Обновлено/Удалено/Прочее)
 - **Мониторинг upstream** — ежедневная проверка новых коммитов с фильтрацией meaningful/trivial
-- **Еженедельный релиз** — авто-тег в понедельник при наличии meaningful изменений
+- **Еженедельная автосборка** — в понедельник при наличии meaningful изменений watch-upstream запускает сборку (dispatch), без ручного тега
 - **Urgency-сборка** — экстренный запуск при CVE/security-фиксах
 - **Ручной запуск** — workflow_dispatch с выбором модели или all
 - **Валидация размера** — проверка лимита firmware partition из upstream
@@ -30,9 +30,11 @@
 
 | Событие | Действие | Когда |
 |---|---|---|
-| `workflow_dispatch` | Ручной запуск | В любой момент |
-| `push` на тег `v*` | Полная сборка + Release | Авто — от watch-upstream |
-| `schedule` (пн 06:30 UTC) | Еженедельная сборка | Каждый понедельник |
+| `workflow_dispatch` (model=all) | Полная сборка + Release + finalize | Ручной запуск / авто — от watch-upstream |
+| `push` на тег `v*` | Полная сборка + Release | Ручной релиз |
+| `watch-upstream` (ежедневно 08:05 MSK) | Мониторинг upstream → dispatch сборки | В понедельник или при urgency |
+
+Автосборка запускается из `watch-upstream.yml` через `gh workflow run build.yml --ref beta` — без тегов и без зависимости от default branch (`main`). `build.yml` и `.upstream/` живут только в ветке `beta`.
 
 ## Как работает changelog
 
@@ -48,10 +50,12 @@
 ## Мониторинг upstream
 
 `watch-upstream.yml` — ежедневно в 08:05 MSK:
-1. Сверяет `.upstream/checked` с HEAD nilabsent
+1. Берёт baseline из `.upstream/last-built` (реально собранное), `.upstream/checked` — верхняя граница осмотренного (защита от фантомных pending)
 2. **Meaningful** — изменения в libs/user/linux-3.4.x/boards/toolchain
 3. **Urgency** — при CVE/security — сборка в тот же день
-4. В понедельник: если есть pending — создаёт тег `vYYYY.MM.DD`
+4. В понедельник (или при urgency): если есть pending — диспатчит `build.yml` на `beta` и очищает `pending`
+
+Шаг устойчив к `nothing to commit`: пустые изменения не приводят к падению job.
 
 ## Версионирование
 
