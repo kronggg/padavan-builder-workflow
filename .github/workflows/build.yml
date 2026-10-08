@@ -169,6 +169,7 @@ jobs:
       with:
         tag_name: ${{ env.RELEASE_TAG }}
         name: Padavan ${{ env.RELEASE_TAG }}
+        target_commitish: beta
         body_path: CHANGELOG.md
         files: release/*
-        make_latest: false
+        make_latest: true
