@@ -10,8 +10,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     container:
-      image: registry.gitlab.com/hadzhioglu/padavan-ng
+      image: ghcr.io/kronggg/padavan-ng:latest
     defaults:
       run:
         shell: bash
