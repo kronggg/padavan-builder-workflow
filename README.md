@@ -28,13 +28,20 @@
 
 ## Триггеры сборки
 
-| Событие | Действие | Когда |
-|---|---|---|
-| `workflow_dispatch` (model=all) | Полная сборка + Release + finalize | Ручной запуск / авто — от watch-upstream |
-| `push` на тег `v*` | Полная сборка + Release | Ручной релиз |
-| `watch-upstream` (ежедневно 08:05 MSK) | Мониторинг upstream → dispatch сборки | В понедельник или при urgency |
+| Событие | Ветка | Действие | Когда |
+|---|---|---|---|
+| `dispatch-watch` (cron 08:05 MSK) | `main` | Запускает `watch-upstream.yml` на `beta` | Ежедневно |
+| `watch-upstream` (cron 08:05 MSK) | `beta` | Мониторинг upstream → dispatch сборки | В понедельник или при urgency |
+| `workflow_dispatch` (model=all) | `beta` | Полная сборка + Release + finalize | Ручной запуск / авто — от watch-upstream |
+| `push` на тег `v*` | — | Полная сборка + Release | Ручной релиз |
 
-Автосборка запускается из `watch-upstream.yml` через `gh workflow run build.yml --ref beta` — без тегов и без зависимости от default branch (`main`). `build.yml` и `.upstream/` живут только в ветке `beta`.
+> **Почему два файла.** GitHub запускает `schedule` только если файл воркфлоу есть
+> на **default branch** (`main`). Вся логика автосборки живёт в `beta`. Поэтому на
+> `main` лежит тонкий `dispatch-watch.yml`, который ничего не собирает — он только
+> вызывает `watch-upstream.yml` на `beta`. Когда `beta` смержится в `main`, файл
+> станет лишним и его нужно удалить.
+
+Автосборка запускается из `watch-upstream.yml` через `gh workflow run build.yml --ref beta` — без тегов. `build.yml`, `configs/` и `.upstream/` живут только в ветке `beta`.
 
 ## Как работает changelog
 
@@ -49,13 +56,40 @@
 
 ## Мониторинг upstream
 
-`watch-upstream.yml` — ежедневно в 08:05 MSK:
-1. Берёт baseline из `.upstream/last-built` (реально собранное), `.upstream/checked` — верхняя граница осмотренного (защита от фантомных pending)
+`watch-upstream.yml` — ежедневно в 08:05 MSK (запускается dispatcher'ом с `main`):
+1. Берёт baseline из `.upstream/last-built` (реально собранное), `.upstream/checked` — верхняя граница осмотренного
 2. **Meaningful** — изменения в libs/user/linux-3.4.x/boards/toolchain
 3. **Urgency** — при CVE/security — сборка в тот же день
-4. В понедельник (или при urgency): если есть pending — диспатчит `build.yml` на `beta` и очищает `pending`
+4. В понедельник (или при urgency): если есть pending и сборка уже не идёт — диспатчит `build.yml` на `beta`
 
-Шаг устойчив к `nothing to commit`: пустые изменения не приводят к падению job.
+### `pending` — производное состояние
+
+`.upstream/pending` пересчитывается от `last-built` **каждый запуск**, а не дописывается
+накопительно. Это исключает «фантомные» SHA: записи, которых уже нет в диапазоне
+`last-built..upstream`, но которые остались от прежних прогонов.
+
+### Защита от тихого пропуска
+
+Базовая точка обязана присутствовать в локальной истории. Если её там нет (мелкий
+`fetch`), история углубляется; если и это не помогло — шаг падает с явной ошибкой,
+вместо того чтобы молча решить «изменений нет».
+
+### Защита от двойного диспатча
+
+Перед запуском сборки проверяется, нет ли уже `in_progress`/`queued` запусков
+`build.yml`. Сборка идёт дольше интервала между проверками, а `last-built`
+сдвигается только по её завершении — без этой проверки возможны дубли.
+
+### Ручная проверка авторежима
+
+Запустить проверку вне понедельника, не дожидаясь cron:
+
+```bash
+gh workflow run watch-upstream.yml --repo <owner>/<repo> --ref beta -f force=true
+```
+
+`force=true` игнорирует правило понедельника. `model=<name>` — собрать одну модель
+вместо всех.
 
 ## Версионирование
 
@@ -67,11 +101,17 @@
 .github/workflows/
 ├── build.yml                  — сборка + finalize (Release, changelog)
 ├── build-one.yml              — reusable: сборка одной модели
+├── build-image.yml            — self-hosted образ сборки (GHCR)
 ├── watch-upstream.yml         — мониторинг nilabsent/padavan-ng
 └── close-inappropriate-pr.yml — защита от PR с build.config
+
+main/.github/workflows/
+└── dispatch-watch.yml         — cron-шим: запускает watch-upstream на beta
+                                 (нужен, пока default branch = main)
+
 .upstream/
 ├── checked                    — последний проверенный SHA
-├── pending                    — накопленные meaningful SHA
+├── pending                    — meaningful SHA от last-built (пересчёт каждый запуск)
 └── last-built                 — предыдущий коммит для changelog
 configs/
 ├── rm-ac2100.config
