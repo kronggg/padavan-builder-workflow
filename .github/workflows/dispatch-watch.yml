@@ -1,0 +1,28 @@
+name: Watch upstream (dispatcher)
+
+# GitHub запускает schedule-воркфлоу ТОЛЬКО если файл есть на default branch.
+# Default = main, а вся логика автосборки живёт в beta. Здесь только триггер:
+# он не собирает сам, а запускает полноценный watch-upstream.yml из beta.
+# Когда beta смержится в main — этот файл станет ненужным.
+
+on:
+  schedule:
+    - cron: '5 5 * * *'  # 08:05 MSK ежедневно
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Dispatch watch-upstream on beta
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh workflow run watch-upstream.yml \
+          --repo "$GITHUB_REPOSITORY" \
+          --ref beta
+        echo "Dispatched watch-upstream.yml on beta"
