@@ -4,10 +4,29 @@ on:
   schedule:
     - cron: '5 5 * * *'  # 08:05 MSK ежедневно
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Собрать немедленно (игнорировать правило понедельника)'
+        type: boolean
+        default: false
+      model:
+        description: 'Что собирать при диспатче'
+        type: choice
+        default: all
+        options:
+          - all
+          - rm-ac2100
+          - mi-3
+          - mi-r3gv2
 
 permissions:
   contents: write
   actions: write
+
+# Два прогона одновременно писать в .upstream/* не должны.
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -42,7 +61,7 @@ jobs:
         git remote add upstream "$PADAVAN_REPO" 2>/dev/null || true
         git fetch upstream "$PADAVAN_BRANCH" --depth=300
 
-        # BASE — точка, до которой upstream уже обработан.
+        # BASE — точка, до которой upstream уже собран.
         # Приоритет у last-built (реально собранное). checked — верхняя граница осмотренного.
         # Если checked отстал от last-built, baseline берём по last-built, чтобы не
         # пере-находить уже собранные коммиты (фантомные pending).
@@ -55,28 +74,47 @@ jobs:
           fi
         fi
 
+        # Базовая точка обязана быть в локальной истории. Иначе git log молча
+        # вернёт пусто, и мы примем это за «изменений нет». Поэтому углубляем
+        # историю, а если BASE так и не найден — падаем громко.
+        if ! git cat-file -e "$BASE" 2>/dev/null; then
+          echo "Baseline $BASE отсутствует в мелкой истории, углубляю fetch"
+          git fetch upstream "$PADAVAN_BRANCH" --unshallow 2>/dev/null || \
+            git fetch upstream "$PADAVAN_BRANCH" --depth=5000
+        fi
+        if ! git cat-file -e "$BASE" 2>/dev/null; then
+          echo "::error::Baseline ${BASE:0:12} не найден в истории upstream — проверка невозможна. Проверьте .upstream/last-built."
+          exit 1
+        fi
+
         NEW_COMMITS=$(git log --format="%H" "$BASE".."upstream/$PADAVAN_BRANCH" 2>/dev/null | tac)
         COMMIT_COUNT=$(echo "$NEW_COMMITS" | grep -c . || true)
 
         LATEST_SHA=$(git rev-parse "upstream/$PADAVAN_BRANCH")
 
         if [[ "$COMMIT_COUNT" -eq 0 ]]; then
-          echo "No new commits since last check"
+          echo "No new commits since last build ($BASE)"
           echo "$LATEST_SHA" > .upstream/checked
-          git add .upstream/checked
+          : > .upstream/pending
+          git add .upstream/checked .upstream/pending
           if ! git diff --cached --quiet; then
             git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: check $(date +%Y-%m-%d) (no new)"
             git push
           else
             echo "No changes to commit."
           fi
+          echo "PENDING_COUNT=0" >> "$GITHUB_ENV"
+          echo "URGENCY=false" >> "$GITHUB_ENV"
           exit 0
         fi
 
-        echo "Found $COMMIT_COUNT new commit(s)"
+        echo "Found $COMMIT_COUNT new commit(s) in ${BASE:0:8}..${LATEST_SHA:0:8}"
 
+        # pending — производное состояние, а не накопительный журнал.
+        # Пересчитываем его от last-built каждый запуск: это убирает фантомные SHA,
+        # которые старая логика «дописывания» тянула за собой бесконечно.
         URGENCY=false
-        touch .upstream/pending
+        : > .upstream/pending
 
         for SHA in $NEW_COMMITS; do
           CHANGED_FILES=$(git diff --name-only "$SHA"^.."$SHA" 2>/dev/null || echo "")
@@ -98,20 +136,15 @@ jobs:
           done
 
           if [[ "$MEANINGFUL" == true ]]; then
-            if ! grep -qx "$SHA" .upstream/pending 2>/dev/null; then
-              echo "$SHA" >> .upstream/pending
-              echo "Added to pending: $SHA"
-            fi
+            echo "$SHA" >> .upstream/pending
+            echo "Added to pending: $SHA"
           fi
         done
 
         echo "$LATEST_SHA" > .upstream/checked
 
-        git add .upstream/checked
-        if [[ -f .upstream/pending ]]; then
-          git add .upstream/pending
-        fi
         PENDING_COUNT=$(wc -l < .upstream/pending 2>/dev/null || echo 0)
+        git add .upstream/checked .upstream/pending
         if ! git diff --cached --quiet; then
           git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: check $(date +%Y-%m-%d)
 
@@ -122,45 +155,50 @@ jobs:
           echo "No changes to commit."
         fi
 
-        echo "URGENCY=$URGENCY" >> $GITHUB_ENV
+        echo "URGENCY=$URGENCY" >> "$GITHUB_ENV"
+        echo "PENDING_COUNT=$PENDING_COUNT" >> "$GITHUB_ENV"
 
     - name: Trigger weekly or urgent build
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        . variables
+        PENDING_COUNT="${PENDING_COUNT:-0}"
+        URGENCY="${URGENCY:-false}"
+        FORCE="${{ github.event.inputs.force }}"
+        MODEL="${{ github.event.inputs.model }}"
+        FORCE="${FORCE:-false}"
+        MODEL="${MODEL:-all}"
 
-        if [[ -f .upstream/pending ]]; then
-          PENDING_COUNT=$(wc -l < .upstream/pending)
-        else
-          PENDING_COUNT=0
-        fi
+        echo "pending=$PENDING_COUNT urgency=$URGENCY force=$FORCE model=$MODEL day=$(date +%u)"
 
         if [[ "$PENDING_COUNT" -eq 0 ]]; then
           echo "No pending commits, no build needed"
           exit 0
         fi
 
-        URGENCY="${{ env.URGENCY }}"
+        if [[ "$FORCE" != "true" && "$URGENCY" != "true" && "$(date +%u)" -ne 1 ]]; then
+          echo "Not Monday (day $(date +%u)), not urgent and not forced — skipping. $PENDING_COUNT SHA(s) pending."
+          exit 0
+        fi
 
-        if [[ "$URGENCY" != "true" && "$(date +%u)" -ne 1 ]]; then
-          echo "Not Monday (day $(date +%u)), skipping weekly build. $PENDING_COUNT SHA(s) pending."
+        # Защита от повторного диспатча: сборка идёт ~30+ мин, а watch может
+        # отработать раньше, чем last-built сдвинется. Тогда следующий запуск
+        # увидел бы те же pending и запустил вторую сборку.
+        IN_FLIGHT=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+          --json status --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length' 2>/dev/null || echo 0)
+        if ! [[ "$IN_FLIGHT" =~ ^[0-9]+$ ]]; then
+          echo "::warning::не удалось прочитать состояние сборок (IN_FLIGHT='$IN_FLIGHT') — считаю 0"
+          IN_FLIGHT=0
+        fi
+        if [[ "$IN_FLIGHT" -gt 0 ]]; then
+          echo "Build already in flight ($IN_FLIGHT run(s)) — skipping dispatch"
           exit 0
         fi
 
         # Диспатч сборки прямо на beta — без тегов и без зависимости от default branch.
-        if gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref beta; then
-          echo "Dispatched build.yml on beta"
+        if gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref beta -f model="$MODEL"; then
+          echo "Dispatched build.yml on beta (model=$MODEL)"
         else
-          echo "WARN: dispatch failed, keeping pending for next run"
+          echo "::warning::dispatch failed, keeping pending for next run"
           exit 0
-        fi
-
-        > .upstream/pending
-        git add .upstream/pending
-        if ! git diff --cached --quiet; then
-          git -c user.name='padavan-builder' -c user.email='<>' commit -m "upstream: clear pending after dispatch $(date +%F)"
-          git push
-        else
-          echo "No changes to commit."
         fi
