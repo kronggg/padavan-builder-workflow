@@ -72,74 +72,121 @@ jobs:
           echo "$v=${!v}" >> $GITHUB_ENV
         done
 
-    - name: Generate changelog from upstream
+    - name: Generate changelog
       run: |
-        git clone --depth 200 -b "$PADAVAN_BRANCH" "$PADAVAN_REPO" upstream-log
-        cd upstream-log
-        CUR_COMMIT=$(git rev-parse HEAD)
-        CUR_DATE=$(git log -1 --format='%ad' --date=short HEAD)
-        PREV_COMMIT=$(cat ../.upstream/last-built 2>/dev/null || echo "")
-        echo "CUR_COMMIT=$CUR_COMMIT" >> $GITHUB_ENV
+        ROOT="$PWD"
+        PREV_UP=$(cat .upstream/last-built 2>/dev/null || true)
+        PREV_FORK=$(cat .upstream/last-fork 2>/dev/null || true)
+        CUR_FORK=$(git rev-parse HEAD)
+        CUR_FORK_DATE=$(git log -1 --format='%ad' --date=short HEAD)
 
+        # Клон ТОЛЬКО для чтения истории: --no-checkout + --filter=blob:none.
+        # Замерено на этом репозитории (1664 коммита, 76k файлов):
+        #   полный клон        61 с  2.7 GB
+        #   --filter=blob:none 45 с  2.0 GB  (всё равно разворачивает файлы)
+        #   + --no-checkout     2 с  7 MB   ← используем этот
+        # Файлы для changelog не нужны: работают только git log, rev-list,
+        # cat-file -e, rev-parse — всё это живёт в объектах коммитов/деревьев.
+        # Глубину НЕ ограничиваем (--depth отрезал бы базовый коммит прошлой сборки).
+        git clone --filter=blob:none --no-checkout -b "$PADAVAN_BRANCH" "$PADAVAN_REPO" upstream-log
+        CUR_COMMIT=$(git -C upstream-log rev-parse HEAD)
+        CUR_DATE=$(git -C upstream-log log -1 --format='%ad' --date=short HEAD)
+        echo "CUR_COMMIT=$CUR_COMMIT" >> "${GITHUB_ENV:-/dev/null}"
+
+        CH="$ROOT/CHANGELOG.md"
         {
-          echo "# Changelog — $(date '+%Y-%m-%d')"
+          echo "# Changelog — $(date -u '+%Y-%m-%d')"
           echo ""
-          echo "Upstream: nilabsent/padavan-ng"
-          echo "Коммит: ${CUR_COMMIT:0:10} (${CUR_DATE})"
-          if [[ -n "$PREV_COMMIT" ]]; then
-            PREV_DATE=$(git log -1 --format='%ad' --date=short "$PREV_COMMIT" 2>/dev/null || echo "-")
-            echo "Предыдущий коммит: ${PREV_COMMIT:0:10} (${PREV_DATE})"
+          echo "Сборка: \`${CUR_FORK:0:10}\` (${CUR_FORK_DATE})"
+          echo "Upstream: nilabsent/padavan-ng \`${CUR_COMMIT:0:10}\` (${CUR_DATE})"
+          echo ""
+        } > "$CH"
+
+        ############################################################
+        # 1. Изменения самой сборки (конфиги, workflow, скрипты)
+        #    Это то, что делает релизы отличными друг от друга даже
+        #    при неизменном upstream.
+        ############################################################
+        echo "## Изменения сборки" >> "$CH"
+        echo "" >> "$CH"
+
+        if [[ -z "$PREV_FORK" ]]; then
+          echo "Первая сборка с фиксацией базовой точки — список изменений появится со следующего релиза." >> "$CH"
+          echo "" >> "$CH"
+        elif ! git cat-file -e "${PREV_FORK}^{commit}" 2>/dev/null; then
+          echo "Базовая точка \`${PREV_FORK:0:10}\` недоступна — сравнение сборок невозможно." >> "$CH"
+          echo "" >> "$CH"
+        else
+          # Служебные коммиты (.upstream/*) — не изменения сборки: их пишет сам
+          # пайплайн, и в релизных заметках они только шумят. Отсекаем по путям.
+          CHANGED_PATHS=$(git diff --name-only "${PREV_FORK}..${CUR_FORK}" -- . ':(exclude).upstream' 2>/dev/null || true)
+          if [[ -z "$CHANGED_PATHS" ]]; then
+            echo "Конфигурация сборки не менялась с \`${PREV_FORK:0:10}\`." >> "$CH"
+            echo "" >> "$CH"
           else
-            echo "Предыдущий коммит: отсутствует (первая сборка)"
+            echo "Базовая точка: \`${PREV_FORK:0:10}\`" >> "$CH"
+            echo "" >> "$CH"
+            echo "Изменённые файлы:" >> "$CH"
+            echo "" >> "$CH"
+            echo '```' >> "$CH"
+            # --name-status читает только деревья, без содержимого файлов.
+            # --stat потребовал бы дозагрузки blob'ов в частичном клоне.
+            git diff --name-status "${PREV_FORK}..${CUR_FORK}" -- . ':(exclude).upstream' >> "$CH" || true
+            echo '```' >> "$CH"
+            echo "" >> "$CH"
+            echo "Коммиты:" >> "$CH"
+            echo "" >> "$CH"
+            git log --format='- %s (`%h`)' "${PREV_FORK}..${CUR_FORK}" \
+              -- . ':(exclude).upstream' >> "$CH" || true
+            echo "" >> "$CH"
           fi
-          echo ""
-        } > ../CHANGELOG.md
-
-        if [[ -z "$PREV_COMMIT" ]]; then
-          echo "### Первая сборка" >> ../CHANGELOG.md
-          echo "Предыдущая версия отсутствует. Это первая сборка в данном форке." >> ../CHANGELOG.md
-          echo "empty_first=true" >> $GITHUB_ENV
-          exit 0
         fi
 
-        if ! git cat-file -e "$PREV_COMMIT" 2>/dev/null; then
-          echo "" >> ../CHANGELOG.md
-          echo "### Предыдущий коммит недоступен" >> ../CHANGELOG.md
-          echo "Коммит ${PREV_COMMIT:0:10} не найден в upstream-репозитории." >> ../CHANGELOG.md
-          echo "empty_unknown=true" >> $GITHUB_ENV
-          exit 0
+        ############################################################
+        # 2. Изменения upstream
+        ############################################################
+        echo "## Изменения upstream" >> "$CH"
+        echo "" >> "$CH"
+
+        if [[ -z "$PREV_UP" ]]; then
+          echo "Предыдущая версия отсутствует — это первая сборка в данном форке." >> "$CH"
+          echo "" >> "$CH"
+        elif ! git -C upstream-log cat-file -e "${PREV_UP}^{commit}" 2>/dev/null; then
+          echo "Предыдущий коммит \`${PREV_UP:0:10}\` не найден в истории upstream." >> "$CH"
+          echo "" >> "$CH"
+        else
+          UP_DELTA=$(git -C upstream-log log --oneline "${PREV_UP}..HEAD" 2>/dev/null || true)
+          if [[ -z "$UP_DELTA" ]]; then
+            echo "Изменений нет: upstream остался на \`${PREV_UP:0:10}\`." >> "$CH"
+            echo "" >> "$CH"
+          else
+            echo "Коммитов: $(git -C upstream-log rev-list --count "${PREV_UP}..HEAD" 2>/dev/null || echo '?')" >> "$CH"
+            echo "" >> "$CH"
+
+            echo "### Добавлено" >> "$CH"
+            git -C upstream-log log --format='- %s' "${PREV_UP}..HEAD" | grep -iE '(add(ing|ed| support)?|new)' >> "$CH" || true
+            echo "" >> "$CH"
+
+            echo "### Исправлено" >> "$CH"
+            git -C upstream-log log --format='- %s' "${PREV_UP}..HEAD" | grep -iE '(fix(ing|ed)?|bugfix|correct)' >> "$CH" || true
+            echo "" >> "$CH"
+
+            echo "### Обновлено" >> "$CH"
+            git -C upstream-log log --format='- %s' "${PREV_UP}..HEAD" | grep -iE '(updat(ing|ed)|bump|revert)' >> "$CH" || true
+            echo "" >> "$CH"
+
+            echo "### Удалено" >> "$CH"
+            git -C upstream-log log --format='- %s' "${PREV_UP}..HEAD" | grep -iE '(delet(ing|ed)|remove|removing|drop)' >> "$CH" || true
+            echo "" >> "$CH"
+
+            echo "### Прочее" >> "$CH"
+            git -C upstream-log log --format='- %s' "${PREV_UP}..HEAD" | grep -viE '(add(ing|ed| support)?|new|fix(ing|ed)?|bugfix|correct|updat(ing|ed)|bump|revert|delet(ing|ed)|remove|removing|drop)' >> "$CH" || true
+            echo "" >> "$CH"
+          fi
         fi
 
-        COMMITS=$(git log --oneline "$PREV_COMMIT..HEAD" 2>/dev/null)
-        if [[ -z "$COMMITS" ]]; then
-          echo "" >> ../CHANGELOG.md
-          echo "Изменений нет: текущий коммит совпадает с предыдущим." >> ../CHANGELOG.md
-          echo "empty_up_to_date=true" >> $GITHUB_ENV
-          exit 0
-        fi
-
-        echo "### Добавлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(add(ing|ed| support)?|new)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
-        echo "" >> ../CHANGELOG.md
-
-        echo "### Исправлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(fix(ing|ed)?|bugfix|correct)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
-        echo "" >> ../CHANGELOG.md
-
-        echo "### Обновлено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(updat(ing|ed)|bump|revert)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
-        echo "" >> ../CHANGELOG.md
-
-        echo "### Удалено" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -iE '(delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
-        echo "" >> ../CHANGELOG.md
-
-        echo "### Прочее" >> ../CHANGELOG.md
-        git log --oneline "$PREV_COMMIT..HEAD" | grep -viE '(add(ing|ed| support)?|new|fix(ing|ed)?|bugfix|correct|updat(ing|ed)|bump|revert|delet(ing|ed)|remove|removing|drop)' | sed 's/^[0-9a-f]* //' | sed 's/^/- /' >> ../CHANGELOG.md || true
-        echo "" >> ../CHANGELOG.md
-
-        echo "PREV_COMMIT=$PREV_COMMIT" >> $GITHUB_ENV
-
+        echo "--- Итоговый CHANGELOG.md ---"
+        cat "$CH"
     - name: Download build artifacts
       uses: actions/download-artifact@v4
       with:
@@ -160,19 +207,23 @@ jobs:
         git config user.name 'padavan-builder'
         git config user.email '<>'
 
+        # last-fork — базовая точка для секции «Изменения сборки» следующего релиза.
+        # Пишем её тем же коммитом, что и last-built: рассинхрон двух половин
+        # состояния дал бы ложный changelog на следующей сборке.
+        CUR_FORK=$(git rev-parse HEAD)
         echo "$CUR_COMMIT" > .upstream/last-built
+        echo "$CUR_FORK" > .upstream/last-fork
         : > .upstream/pending
 
-        git add .upstream/last-built .upstream/pending
+        git add .upstream/last-built .upstream/last-fork .upstream/pending
         if git diff --cached --quiet; then
           echo "No changes to commit."
           exit 0
         fi
 
-        git commit -q -m ".upstream: last-built -> ${CUR_COMMIT:0:10}, pending cleared
-
-        Сборка ${RELEASE_TAG} включила все pending-коммиты, поэтому список очищен.
-        last-built и pending держим согласованными в одном коммите."
+        git commit -q -m ".upstream: last-built -> ${CUR_COMMIT:0:10}, pending cleared" \
+          -m "Сборка ${RELEASE_TAG} включила все pending-коммиты, поэтому список очищен." \
+          -m "last-built, last-fork и pending обновлены одним коммитом."
 
         for i in 1 2 3 4 5; do
           if git push origin "HEAD:beta"; then

@@ -73,7 +73,14 @@ jobs:
     - name: Download sources and toolchain
       run: |
         git config --global --add safe.directory '*'
-        git clone -b "$PADAVAN_BRANCH" "$PADAVAN_REPO"
+        # Частичный клон: тянем всю историю коммитов и деревья, но НЕ содержимое
+        # файлов (blob:none). Полный клон репозитория на 1.28 GB занимал от 45 сек
+        # до 22 мин в зависимости от сети раннера — это была главная причина
+        # разброса времени сборки. История коммитов при blob:none сохраняется,
+        # поэтому rev-parse/git log (нужны в changelog и для SHA в имени
+        # прошивки) продолжают работать. Содержимое файлов до-качивается
+        # автоматически при checkout.
+        git clone --filter=blob:none -b "$PADAVAN_BRANCH" "$PADAVAN_REPO"
         git -C padavan-ng checkout "$PADAVAN_COMMIT"
         wget -qO- "$PADAVAN_TOOLCHAIN_URL" | tar -C padavan-ng --zstd -xf -
 
