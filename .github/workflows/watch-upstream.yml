@@ -18,6 +18,7 @@ on:
           - rm-ac2100
           - mi-3
           - mi-r3gv2
+          - mi-4
 
 permissions:
   contents: write

@@ -55,8 +55,18 @@ jobs:
           PART_FILE="upstream-check/trunk/configs/boards/${VENDOR}/${PRODUCT}/partitions.config"
           if [[ -f "$PART_FILE" ]]; then
             cat "$PART_FILE"
-            MAX_SIZE=$(grep -oP 'mtd_firmware_size\s*=\s*\K\d+' "$PART_FILE" || \
-                       grep -oP 'mtd_firmware_start\s*=\s*\K\d+' "$PART_FILE" || echo "0")
+            # Лимит берём тем же способом, что и сам upstream в trunk/Makefile:
+            # в partitions.config НЕТ переменных mtd_firmware_size - есть только
+            # блок { name: "Firmware", ... size: 0x... }. Берём size из строки,
+            # идущей через две после строки с "Firmware" (ровно как awk в upstream).
+            # Прежняя версия искала несуществующие mtd_*, всегда получала 0,
+            # поэтому размер прошивки НИКОГДА не проверялся.
+            MAX_SIZE_HEX=$(awk '/"Firmware"/{ getline; getline; gsub(/,$/,""); print $2 }' "$PART_FILE")
+            if [[ -n "$MAX_SIZE_HEX" ]]; then
+              MAX_SIZE=$(( MAX_SIZE_HEX ))
+            else
+              MAX_SIZE=0
+            fi
             if [[ "$MAX_SIZE" != "0" ]]; then
               MAX_SIZE_MB=$(awk "BEGIN { printf \"%.1f\", $MAX_SIZE / 1048576 }")
               echo "Firmware partition limit: $MAX_SIZE bytes (~${MAX_SIZE_MB} MB)"

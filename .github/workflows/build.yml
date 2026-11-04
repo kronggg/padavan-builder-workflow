@@ -13,6 +13,7 @@ on:
           - rm-ac2100
           - mi-3
           - mi-r3gv2
+          - mi-4
   push:
     tags:
       - 'v*'
@@ -40,9 +41,15 @@ jobs:
     with:
       model: mi-r3gv2
 
+  mi-4:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.model == 'all' || github.event.inputs.model == 'mi-4' }}
+    uses: ./.github/workflows/build-one.yml
+    with:
+      model: mi-4
+
   finalize:
     if: ${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.model == 'all') }}
-    needs: [rm-ac2100, mi-3, mi-r3gv2]
+    needs: [rm-ac2100, mi-3, mi-r3gv2, mi-4]
     runs-on: ubuntu-latest
     defaults:
       run:
