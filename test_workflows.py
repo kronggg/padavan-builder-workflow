@@ -150,5 +150,48 @@ class TestMi4Config(unittest.TestCase):
         self.assertNotIn("CONFIG_FIRMWARE_WIFI_DRIVER=5.1.0.0", self.cfg)
 
 
+class TestForceLogic(unittest.TestCase):
+    """force=true должен запускать сборку даже при пустом pending."""
+
+    SCRIPT = None
+
+    @classmethod
+    def setUpClass(cls):
+        with open(".github/workflows/watch-upstream.yml", encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+        for job in (doc.get("jobs") or {}).values():
+            steps = job.get("steps")
+            if not isinstance(steps, list):
+                continue
+            for st in steps:
+                if isinstance(st, dict) and "Trigger weekly or urgent build" in (st.get("name") or ""):
+                    cls.SCRIPT = st["run"]
+        assert cls.SCRIPT, "не найден шаг 'Trigger weekly or urgent build'"
+
+    def _should_exit_early(self, pending, force):
+        """Прогнать только проверку pending с подставленными значениями."""
+        # вырезаем первый if-блок про pending и проверяем его условие
+        import re
+        m = re.search(r'if \[\[ "\$PENDING_COUNT" -eq 0(.*?)\]\]; then', self.SCRIPT, re.S)
+        self.assertIsNotNone(m, "не найден if про PENDING_COUNT")
+        extra = m.group(1)
+        cond = '[[ "$PENDING_COUNT" -eq 0' + extra + ' ]]'
+        r = subprocess.run(
+            ["bash", "-c", f'PENDING_COUNT={pending} FORCE={force}; {cond} && echo EXIT || echo CONTINUE'],
+            capture_output=True, text=True)
+        return "EXIT" in r.stdout
+
+    def test_pending_zero_force_false_exits(self):
+        self.assertTrue(self._should_exit_early(0, "false"))
+
+    def test_pending_zero_force_true_continues(self):
+        self.assertFalse(self._should_exit_early(0, "true"))
+
+    def test_pending_nonzero_force_false_continues(self):
+        self.assertFalse(self._should_exit_early(3, "false"))
+
+    def test_pending_nonzero_force_true_continues(self):
+        self.assertFalse(self._should_exit_early(3, "true"))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -172,8 +172,12 @@ jobs:
 
         echo "pending=$PENDING_COUNT urgency=$URGENCY force=$FORCE model=$MODEL day=$(date +%u)"
 
-        if [[ "$PENDING_COUNT" -eq 0 ]]; then
-          echo "No pending commits, no build needed"
+        # force=true — это явный запрос пересобрать текущее состояние, даже если
+        # новых коммитов нет. Поэтому проверка pending пропускается при force,
+        # иначе кнопка "пересобрать сейчас" бесполезна (что и случилось: force
+        # игнорировался, потому что пропускался первым).
+        if [[ "$PENDING_COUNT" -eq 0 && "$FORCE" != "true" ]]; then
+          echo "No pending commits, no build force requested — no build needed"
           exit 0
         fi
 
